@@ -35,6 +35,7 @@ mania2mp4 replay.osr --start 60 --duration 10   # quick 10 s preview
 mania2mp4 replay.osr --skin bar --colors column  # classic bar notes
 mania2mp4 replay.osr --keys "D F J K"      # custom labels for the input overlay
 mania2mp4 replay.osr --no-inputs           # hide the input overlay
+mania2mp4 --set-flag de                    # small flag next to "Player: name" (de, at, nl, fr, it, ...)
 ```
 
 Skins:

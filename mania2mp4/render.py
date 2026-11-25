@@ -42,6 +42,39 @@ def _font_path(bold: bool) -> str | None:
         return None
 
 
+# Simple striped flags: (orientation, colours)
+FLAGS = {
+    "de": ("h", [(0, 0, 0), (221, 0, 0), (255, 206, 0)]),
+    "at": ("h", [(237, 41, 57), (255, 255, 255), (237, 41, 57)]),
+    "nl": ("h", [(174, 28, 40), (255, 255, 255), (33, 70, 139)]),
+    "pl": ("h", [(255, 255, 255), (220, 20, 60)]),
+    "ua": ("h", [(0, 87, 183), (255, 215, 0)]),
+    "ru": ("h", [(255, 255, 255), (0, 57, 166), (213, 43, 30)]),
+    "fr": ("v", [(0, 38, 84), (255, 255, 255), (206, 17, 38)]),
+    "it": ("v", [(0, 140, 69), (244, 245, 240), (205, 33, 42)]),
+    "be": ("v", [(0, 0, 0), (253, 218, 36), (239, 51, 64)]),
+}
+
+
+def draw_flag(surf, code, x, y, h):
+    """Draw a small striped flag with a thin outline; returns its width (0 if unknown)."""
+    flag = FLAGS.get((code or "").lower())
+    if not flag:
+        return 0
+    orient, cols = flag
+    w = int(h * 5 / 3)
+    n = len(cols)
+    for i, col in enumerate(cols):
+        if orient == "h":
+            y0, y1 = y + h * i // n, y + h * (i + 1) // n
+            pygame.draw.rect(surf, col, (x, y0, w, y1 - y0))
+        else:
+            x0, x1 = x + w * i // n, x + w * (i + 1) // n
+            pygame.draw.rect(surf, col, (x0, y, x1 - x0, h))
+    pygame.draw.rect(surf, (110, 112, 128), (x - 1, y - 1, w + 2, h + 2), 1)
+    return w
+
+
 def _fmt_time(seconds: float) -> str:
     seconds = max(0, int(seconds))
     return f"{seconds // 60}:{seconds % 60:02d}"
@@ -64,6 +97,7 @@ class RenderOptions:
     colors: str | None = None       # "snap" or "column"; default depends on the skin
     show_inputs: bool = True
     key_labels: list | None = None
+    flag: str | None = None         # country code for a small flag next to the player name, e.g. "de"
     ln_end: str = "plain"           # osu! skins: "plain" closes hold bodies with a simple edge, "skin" uses the tail image
 
 
@@ -250,8 +284,27 @@ class Scene:
             pygame.draw.rect(bg, GOLD if is_mod else (60, 62, 78), (cx, y, cw, ch), border_radius=ch // 2)
             bg.blit(t, (cx + int(9 * u), y + int(4 * u)))
             cx += cw + int(8 * u)
-        player = self.text(self.f_small_b, rep.player, TEXT)
-        bg.blit(player, (r.right - self.pad - player.get_width(), y))
+        self._player_tag(bg, r.right - self.pad, y + int(2 * u), align_right=True)
+
+    def _player_tag(self, surf, x, y, align_right=False, center=False):
+        """'Player: name' followed by the flag. x is the left edge, right edge or centre."""
+        u = self.u
+        label = self.text(self.f_small, "Player:", MUTED)
+        name = self.text(self.f_small_b, self.rep.player, TEXT)
+        fh = int(16 * u)
+        fw = int(fh * 5 / 3) if (self.o.flag or "").lower() in FLAGS else 0
+        gap = int(7 * u)
+        total = label.get_width() + gap + name.get_width() + (gap + fw if fw else 0)
+        if align_right:
+            x -= total
+        elif center:
+            x -= total // 2
+        surf.blit(label, (x, y))
+        x += label.get_width() + gap
+        surf.blit(name, (x, y))
+        x += name.get_width() + gap
+        if fw:
+            draw_flag(surf, self.o.flag, x, y + (name.get_height() - fh) // 2 + int(1 * u), fh)
 
     def _static_error_card(self, bg):
         u, r = self.u, self.error_rect
@@ -532,8 +585,11 @@ class Scene:
         maxw = cw - 2 * self.pad
         center(self.text(self.f_title, self.fit(self.f_title, f"{bm.artist} - {bm.title}", maxw), TEXT), 40)
         center(self.text(self.f_small_b, self.fit(self.f_small_b, f"[{bm.version}]", maxw), GOLD), 34)
-        mods = f"  +{rep.mod_string}" if rep.mod_string else ""
-        center(self.text(self.f_small, f"played by {rep.player}{mods}", MUTED), 50)
+        self._player_tag(layer, cx, y, center=True)
+        y += int(34 * u)
+        if rep.mod_string:
+            center(self.text(self.f_small_b, "+" + rep.mod_string, GOLD), 16)
+        y += int(16 * u)
         center(self.text(self.f_combo, f"{rep.score:,}".replace(",", "."), TEXT), 92)
         stats = [rep.count_geki, rep.count_300, rep.count_katu, rep.count_100, rep.count_50, rep.count_miss]
         total = sum(stats) or 1

@@ -112,7 +112,7 @@ def convert(replay_path: Path, args, gui: bool) -> Path:
                          encoder=args.encoder, quality=args.quality, offset_ms=args.offset,
                          start_ms=args.start * 1000 if args.start is not None else None,
                          duration_s=args.duration, skin=args.skin, colors=args.colors,
-                         show_inputs=not args.no_inputs, key_labels=labels, ln_end=args.ln_end)
+                         show_inputs=not args.no_inputs, key_labels=labels, ln_end=args.ln_end, flag=args.flag)
 
     def progress(done, total, elapsed, encoder):
         pct = done / total
@@ -149,6 +149,8 @@ def main(argv=None):
                    help="note colours: by rhythm (snap, default for arrows) or by column (default for bars)")
     p.add_argument("--ln-end", choices=["plain", "skin"], default="plain",
                    help="osu! skins: end of long notes, plain edge (default) or the skin's tail image")
+    p.add_argument("--flag", help='country flag next to the player name, e.g. "de" (saved default from --set-flag)')
+    p.add_argument("--set-flag", metavar="CODE", help='remember a default flag ("none" to remove) and exit')
     p.add_argument("--no-inputs", action="store_true", help="hide the keyboard input overlay")
     p.add_argument("--keys", help='key labels for the input overlay, e.g. "D F J K" (default: read from osu! config)')
     p.add_argument("-r", "--resolution", default="1920x1080", help="video size, e.g. 1280x720 or 2560x1440")
@@ -182,6 +184,17 @@ def main(argv=None):
         save_config(cfg)
         print(f"Default skin: {spec}")
         return 0
+    if args.set_flag:
+        cfg = load_config()
+        if args.set_flag.lower() == "none":
+            cfg.pop("flag", None)
+        else:
+            cfg["flag"] = args.set_flag.lower()
+        save_config(cfg)
+        print(f"Default flag: {cfg.get('flag', 'none')}")
+        return 0
+    if args.flag is None:
+        args.flag = load_config().get("flag")
     if not args.skin:
         args.skin = load_config().get("skin", "arrow")
 
