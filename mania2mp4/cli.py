@@ -1,6 +1,8 @@
 """Command line interface: mania2mp4 replay.osr [-o out.mp4]"""
 
 import argparse
+import json
+import os
 import re
 import shutil
 import subprocess
@@ -13,10 +15,25 @@ from .beatmap import parse_beatmap
 from .index import default_songs_dir, find_beatmap
 from .inputs import load_key_labels
 from .osr import MOD_MR, parse_replay
-from .render import RenderOptions, render_video
+from .osuskin import SKIN_DIR, installed_skins, resolve_skin_dir
+from .render import RenderOptions
+from .video import render_video
 
 DEFAULT_REPLAYS = Path.home() / ".local/share/osu-wine/osu!/Replays"
 DEFAULT_OUT = Path.home() / "Videos/osu-replays"
+CONFIG_FILE = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "mania2mp4" / "config.json"
+
+
+def load_config() -> dict:
+    try:
+        return json.loads(CONFIG_FILE.read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def save_config(cfg: dict) -> None:
+    CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    CONFIG_FILE.write_text(json.dumps(cfg, indent=2) + "\n")
 
 
 def _notify(title, body, gui):
@@ -124,7 +141,10 @@ def main(argv=None):
     p.add_argument("--beatmap", help="path to the .osu file (skips the automatic lookup)")
     p.add_argument("--songs", help="osu! Songs folder (auto-detected by default)")
     p.add_argument("--scroll-ms", type=float, default=450, help="time in ms a note is visible before it hits (lower = faster, default 450)")
-    p.add_argument("--skin", choices=["arrow", "bar"], default="arrow", help="note style (default arrow)")
+    p.add_argument("--skin", help='"arrow", "bar", an osu! skin (.osk file, skin folder or installed skin name); '
+                                  'default: the saved default skin or "arrow"')
+    p.add_argument("--set-default-skin", metavar="SKIN", help="install/remember a skin as the default and exit")
+    p.add_argument("--list-skins", action="store_true", help="show installed osu! skins and exit")
     p.add_argument("--colors", choices=["snap", "column"],
                    help="note colours: by rhythm (snap, default for arrows) or by column (default for bars)")
     p.add_argument("--no-inputs", action="store_true", help="hide the keyboard input overlay")
@@ -140,6 +160,28 @@ def main(argv=None):
     p.add_argument("--gui", action="store_true", help="desktop notifications (used by the menu entry)")
     p.add_argument("--version", action="version", version=f"mania2mp4 {__version__}")
     args = p.parse_args(argv)
+
+    if args.list_skins:
+        names = installed_skins()
+        print("Built-in: arrow, bar")
+        print("Installed: " + (", ".join(names) if names else "none"))
+        print(f"Default: {load_config().get('skin', 'arrow')}")
+        return 0
+    if args.set_default_skin:
+        spec = args.set_default_skin
+        if spec not in ("arrow", "bar"):
+            d = resolve_skin_dir(spec)
+            if d is None:
+                print(f"Skin not found: {spec}", file=sys.stderr)
+                return 1
+            spec = d.name if d.parent == SKIN_DIR else str(d)
+        cfg = load_config()
+        cfg["skin"] = spec
+        save_config(cfg)
+        print(f"Default skin: {spec}")
+        return 0
+    if not args.skin:
+        args.skin = load_config().get("skin", "arrow")
 
     replays = [Path(r) for r in args.replays]
     gui = args.gui

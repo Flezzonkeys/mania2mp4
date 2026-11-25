@@ -1,12 +1,11 @@
-"""Frame renderer and ffmpeg pipeline for osu!mania replays."""
+"""Scene: draws one video frame of an osu!mania replay."""
 
+import math
 import os
 import shutil
 import subprocess
 import sys
-import time
 from dataclasses import dataclass
-from pathlib import Path
 
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
@@ -15,9 +14,11 @@ import pygame  # noqa: E402
 from . import judge, skins  # noqa: E402
 from .inputs import InputOverlay  # noqa: E402
 
-WHITE = (235, 238, 248)
-BLUE = (92, 190, 255)
-GOLD = (255, 204, 90)
+GOLD = skins.GOLD
+TEXT = (240, 241, 248)
+MUTED = (150, 154, 172)
+CARD_BG = (12, 12, 18, 185)
+CARD_BORDER = (255, 255, 255, 26)
 
 JUDGE_COLORS = [
     (180, 240, 255),  # MAX
@@ -27,25 +28,6 @@ JUDGE_COLORS = [
     (170, 170, 180),  # 50
     (255, 80, 80),    # MISS
 ]
-
-
-def column_colors(keys: int):
-    presets = {
-        1: [GOLD],
-        2: [WHITE, WHITE],
-        3: [WHITE, GOLD, WHITE],
-        4: [WHITE, BLUE, BLUE, WHITE],
-        5: [WHITE, BLUE, GOLD, BLUE, WHITE],
-        6: [WHITE, BLUE, WHITE, WHITE, BLUE, WHITE],
-        7: [WHITE, BLUE, WHITE, GOLD, WHITE, BLUE, WHITE],
-        8: [GOLD, WHITE, BLUE, WHITE, WHITE, BLUE, WHITE, GOLD],
-    }
-    if keys in presets:
-        return presets[keys]
-    cols = [WHITE if i % 2 == 0 else BLUE for i in range(keys)]
-    if keys % 2:
-        cols[keys // 2] = GOLD
-    return cols
 
 
 def _font_path(bold: bool) -> str | None:
@@ -60,8 +42,9 @@ def _font_path(bold: bool) -> str | None:
         return None
 
 
-def _scale(c, f):
-    return tuple(max(0, min(255, int(v * f))) for v in c)
+def _fmt_time(seconds: float) -> str:
+    seconds = max(0, int(seconds))
+    return f"{seconds // 60}:{seconds % 60:02d}"
 
 
 @dataclass
@@ -77,10 +60,27 @@ class RenderOptions:
     duration_s: float | None = None
     results_s: float = 5.0
     offset_ms: float = 0.0          # shifts audio relative to video
-    skin: str = "arrow"             # "arrow" or "bar"
+    skin: str = "arrow"             # "arrow", "bar", an .osk file, a skin folder or an installed skin name
     colors: str | None = None       # "snap" or "column"; default depends on the skin
     show_inputs: bool = True
     key_labels: list | None = None
+
+
+def make_skin(scene, spec: str):
+    if spec == "arrow":
+        return skins.ArrowSkin(scene)
+    if spec == "bar":
+        return skins.BarSkin(scene)
+    from .osuskin import OsuSkin, SkinError, resolve_skin_dir
+    skin_dir = resolve_skin_dir(spec)
+    if skin_dir is None:
+        print(f"Skin '{spec}' not found, using the arrow skin.", file=sys.stderr)
+        return skins.ArrowSkin(scene)
+    try:
+        return OsuSkin(scene, skin_dir)
+    except SkinError as exc:
+        print(f"Skin '{skin_dir.name}' cannot be used ({exc}), using the arrow skin.", file=sys.stderr)
+        return skins.ArrowSkin(scene)
 
 
 class Scene:
@@ -89,42 +89,42 @@ class Scene:
         self.bm, self.rep, self.res, self.win, self.o = bm, replay, results, win, opts
         W, H = opts.width, opts.height
         self.W, self.H = W, H
-        self.u = H / 1080.0  # layout unit
-        u = self.u
-
+        self.u = u = H / 1080.0
         self.keys = bm.keys
-        self.col_w = int(min(110, 560 / self.keys) * u)
-        self.field_w = self.col_w * self.keys
-        self.field_x = (W - self.field_w) // 2
-        self.arrow = opts.skin == "arrow"
-        self.hit_y = int((850 if self.arrow else 900) * u)
-        self.note_h = int(34 * u)
-        self.px_per_ms = self.hit_y / (opts.scroll_ms * replay.rate)  # map ms -> px
-        self.colors = column_colors(self.keys)
-        self.colors_by_column = self.colors
-        color_mode = opts.colors or ("snap" if self.arrow else "column")
-        if color_mode == "snap":
-            self.note_colors = skins.snap_colors(bm.notes, bm.timing_points)
-        else:
-            self.note_colors = [self.colors[n.column] for n in bm.notes]
-        self.directions = skins.arrow_layout(self.keys)
+        self.colors_by_column = skins.column_colors(self.keys)
 
         fb, fr = _font_path(True), _font_path(False)
         self.font_bold, self.font_regular = fb, fr
-        self.f_combo = pygame.font.Font(fb, int(72 * u))
-        self.f_judge = pygame.font.Font(fb, int(56 * u))
-        self.f_big = pygame.font.Font(fb, int(44 * u))
-        self.f_med = pygame.font.Font(fb, int(28 * u))
-        self.f_small = pygame.font.Font(fr, int(22 * u))
-        self.f_tiny = pygame.font.Font(fr, int(18 * u))
+        self.f_combo = pygame.font.Font(fb, int(64 * u))
+        self.f_judge = pygame.font.Font(fb, int(46 * u))
+        self.f_huge = pygame.font.Font(fb, int(56 * u))
+        self.f_big = pygame.font.Font(fb, int(40 * u))
+        self.f_title = pygame.font.Font(fb, int(28 * u))
+        self.f_med = pygame.font.Font(fb, int(24 * u))
+        self.f_small = pygame.font.Font(fr, int(21 * u))
+        self.f_small_b = pygame.font.Font(fb, int(21 * u))
+        self.f_label = pygame.font.Font(fb, int(15 * u))
         self._text_cache = {}
 
-        self._build_static()
-        self._build_sprites()
-        self._prepare_timeline()
-        self.inputs = InputOverlay(self, opts.key_labels) if opts.show_inputs else None
+        self.skin = make_skin(self, opts.skin)
+        sk = self.skin
+        self.rc_y = sk.rc_y
+        self.px_per_ms = sk.rc_y / (opts.scroll_ms * replay.rate)  # map ms -> px
 
-    # ---------- setup ----------
+        color_mode = opts.colors or ("snap" if sk.uses_snap else "column")
+        if color_mode == "snap":
+            self.note_colors = skins.snap_colors(bm.notes, bm.timing_points)
+        else:
+            self.note_colors = [self.colors_by_column[n.column] for n in bm.notes]
+
+        self._layout()
+        self._build_static()
+        self._prepare_timeline()
+        self.inputs = None
+        if opts.show_inputs and self.input_rect.width >= int(220 * u):
+            self.inputs = InputOverlay(self, opts.key_labels, self.input_rect)
+
+    # ---------- helpers ----------
 
     def text(self, font, s, color):
         key = (id(font), s, color)
@@ -135,6 +135,40 @@ class Scene:
             surf = font.render(s, True, color)
             self._text_cache[key] = surf
         return surf
+
+    def fit(self, font, s, max_w):
+        """Shorten text with an ellipsis until it fits."""
+        if font.size(s)[0] <= max_w:
+            return s
+        while s and font.size(s + "...")[0] > max_w:
+            s = s[:-1]
+        return s.rstrip() + "..."
+
+    def card(self, surf, rect):
+        r = int(14 * self.u)
+        box = pygame.Surface(rect.size, pygame.SRCALPHA)
+        pygame.draw.rect(box, CARD_BG, box.get_rect(), border_radius=r)
+        pygame.draw.rect(box, CARD_BORDER, box.get_rect(), max(1, int(1.5 * self.u)), border_radius=r)
+        surf.blit(box, rect.topleft)
+
+    # ---------- layout and static background ----------
+
+    def _layout(self):
+        u, W, H = self.u, self.W, self.H
+        sk = self.skin
+        self.margin = M = int(36 * u)
+        side = sk.field_x
+        self.card_w = cw = int(max(0, min(440 * u, side - 2 * M)))
+        self.left_x = (side - cw) // 2
+        self.right_x = sk.field_x + sk.field_w + (W - sk.field_x - sk.field_w - cw) // 2
+        self.pad = int(22 * u)
+
+        self.map_rect = pygame.Rect(self.left_x, M, cw, int(218 * u))
+        top = self.map_rect.bottom + int(22 * u)
+        self.input_rect = pygame.Rect(self.left_x, top, cw, H - M - top)
+        self.stats_rect = pygame.Rect(self.right_x, M, cw, int(500 * u))
+        eh = int(150 * u)
+        self.error_rect = pygame.Rect(self.right_x, H - M - eh, cw, eh)
 
     def _load_background(self):
         W, H = self.W, self.H
@@ -147,150 +181,101 @@ class Scene:
                 img = img.resize((int(img.width * scale) + 1, int(img.height * scale) + 1), Image.LANCZOS)
                 left, top = (img.width - W) // 2, (img.height - H) // 2
                 img = img.crop((left, top, left + W, top + H))
-                img = img.filter(ImageFilter.GaussianBlur(radius=8 * self.u))
+                img = img.filter(ImageFilter.GaussianBlur(radius=10 * self.u))
                 surf = pygame.image.frombytes(img.tobytes(), (W, H), "RGB")
-                dim = pygame.Surface((W, H))
-                dim.fill((0, 0, 0))
-                dim.set_alpha(int(255 * self.o.bg_dim))
+                # Note: per-pixel alpha, set_alpha on opaque 32-bit surfaces only blends blue in SDL here
+                dim = pygame.Surface((W, H), pygame.SRCALPHA, 32)
+                dim.fill((0, 0, 0, int(255 * self.o.bg_dim)))
                 surf.blit(dim, (0, 0))
                 return surf
             except Exception as exc:  # noqa: BLE001
                 print(f"Background could not be loaded: {exc}", file=sys.stderr)
-        surf = pygame.Surface((W, H))
+        surf = pygame.Surface((W, H), 0, 32)
         surf.fill((14, 14, 22))
         return surf
 
     def _build_static(self):
-        u = self.u
+        u, sk = self.u, self.skin
         bg = self._load_background()
-        field = pygame.Surface((self.field_w, self.H), pygame.SRCALPHA)
-        field.fill((0, 0, 0, 215))
+
+        # Playfield
+        field = pygame.Surface((sk.field_w, self.H), pygame.SRCALPHA)
+        field.fill((0, 0, 0, 205))
         for c in range(1, self.keys):
-            pygame.draw.line(field, (255, 255, 255, 22), (c * self.col_w, 0), (c * self.col_w, self.H))
-        bg.blit(field, (self.field_x, 0))
-        # Edges of the playfield
-        edge = (255, 255, 255)
-        pygame.draw.line(bg, _scale(edge, 0.35), (self.field_x - 1, 0), (self.field_x - 1, self.H), max(1, int(2 * u)))
-        pygame.draw.line(bg, _scale(edge, 0.35), (self.field_x + self.field_w, 0),
-                         (self.field_x + self.field_w, self.H), max(1, int(2 * u)))
-        # Judgement line
-        if not self.arrow:
-            pygame.draw.rect(bg, (230, 230, 240), (self.field_x, self.hit_y, self.field_w, max(2, int(3 * u))))
+            x = sk.col_x[c] - sk.field_x
+            pygame.draw.line(field, (255, 255, 255, 16), (x, 0), (x, self.H))
+        bg.blit(field, (sk.field_x, 0))
+        edge = (95, 98, 115)
+        lw = max(1, int(2 * u))
+        pygame.draw.line(bg, edge, (sk.field_x - 1, 0), (sk.field_x - 1, self.H), lw)
+        pygame.draw.line(bg, edge, (sk.field_x + sk.field_w, 0), (sk.field_x + sk.field_w, self.H), lw)
+        sk.stage(bg)
 
-        # Static texts: map info, player and mods
-        bm, rep = self.bm, self.rep
-        x, y = int(36 * u), int(30 * u)
-        bg.blit(self.text(self.f_med, f"{bm.artist} - {bm.title}", (255, 255, 255)), (x, y))
+        if self.card_w > 0:
+            self._static_map_card(bg)
+            self.card(bg, self.input_rect)
+            self.card(bg, self.stats_rect)
+            self._static_error_card(bg)
+
+        self.static = pygame.Surface((self.W, self.H), 0, 32)
+        self.static.blit(bg, (0, 0))
+
+    def _static_map_card(self, bg):
+        u, bm, rep = self.u, self.bm, self.rep
+        r = self.map_rect
+        self.card(bg, r)
+        x, y = r.x + self.pad, r.y + int(18 * u)
+        maxw = r.width - 2 * self.pad
+        bg.blit(self.text(self.f_label, "NOW PLAYING", MUTED), (x, y))
+        y += int(24 * u)
+        bg.blit(self.text(self.f_title, self.fit(self.f_title, bm.title, maxw), TEXT), (x, y))
         y += int(38 * u)
-        bg.blit(self.text(self.f_small, f"[{bm.version}]  mapped by {bm.creator}", (200, 205, 220)), (x, y))
+        bg.blit(self.text(self.f_small, self.fit(self.f_small, bm.artist, maxw), (205, 208, 222)), (x, y))
         y += int(30 * u)
-        info = f"{bm.keys}K  OD {bm.od:g}  HP {bm.hp:g}"
-        bg.blit(self.text(self.f_small, info, (200, 205, 220)), (x, y))
-        y += int(44 * u)
-        bg.blit(self.text(self.f_med, f"Played by {rep.player}", (255, 255, 255)), (x, y))
-        if rep.mod_string:
-            y += int(38 * u)
-            bg.blit(self.text(self.f_med, "+" + rep.mod_string, GOLD), (x, y))
+        diff = self.fit(self.f_small_b, f"[{bm.version}]", maxw)
+        bg.blit(self.text(self.f_small_b, diff, GOLD), (x, y))
+        y += int(28 * u)
+        bg.blit(self.text(self.f_small, self.fit(self.f_small, f"mapped by {bm.creator}", maxw), MUTED), (x, y))
+        y += int(36 * u)
 
-        # Hit error bar zones
-        self.eb_w = int(360 * u)
+        chips = [f"{bm.keys}K", f"OD {bm.od:g}", f"HP {bm.hp:g}"]
+        if rep.mod_string:
+            chips.append("+" + rep.mod_string)
+        cx = x
+        for i, chip in enumerate(chips):
+            is_mod = chip.startswith("+")
+            t = self.text(self.f_label, chip, (20, 20, 26) if is_mod else TEXT)
+            cw, ch = t.get_width() + int(18 * u), t.get_height() + int(8 * u)
+            pygame.draw.rect(bg, GOLD if is_mod else (60, 62, 78), (cx, y, cw, ch), border_radius=ch // 2)
+            bg.blit(t, (cx + int(9 * u), y + int(4 * u)))
+            cx += cw + int(8 * u)
+        player = self.text(self.f_small_b, rep.player, TEXT)
+        bg.blit(player, (r.right - self.pad - player.get_width(), y))
+
+    def _static_error_card(self, bg):
+        u, r = self.u, self.error_rect
+        self.card(bg, r)
+        x = r.x + self.pad
+        bg.blit(self.text(self.f_label, "HIT ERROR", MUTED), (x, r.y + int(18 * u)))
+        self.eb_w = r.width - 2 * self.pad
         self.eb_h = int(10 * u)
-        self.eb_x = (self.W - self.eb_w) // 2
-        self.eb_y = int(1050 * u)
+        self.eb_cx = r.centerx
+        self.eb_y = r.y + int(78 * u)
         self.eb_scale = (self.eb_w / 2) / self.win.w50
-        cx = self.W // 2
         zones = [(self.win.w50, JUDGE_COLORS[4]), (self.win.w100, JUDGE_COLORS[3]),
                  (self.win.w200, JUDGE_COLORS[2]), (self.win.w300, JUDGE_COLORS[1]),
                  (self.win.max, JUDGE_COLORS[0])]
         for w, col in zones:
             half = int(w * self.eb_scale)
-            pygame.draw.rect(bg, _scale(col, 0.45), (cx - half, self.eb_y, half * 2, self.eb_h))
-        pygame.draw.rect(bg, (255, 255, 255), (cx - 1, self.eb_y - int(8 * u), 2, self.eb_h + int(16 * u)))
+            pygame.draw.rect(bg, skins.scale_color(col, 0.45), (self.eb_cx - half, self.eb_y, half * 2, self.eb_h))
+        pygame.draw.rect(bg, (255, 255, 255), (self.eb_cx - 1, self.eb_y - int(8 * u), 2, self.eb_h + int(16 * u)))
+        early = self.text(self.f_label, "EARLY", MUTED)
+        late = self.text(self.f_label, "LATE", MUTED)
+        ly = self.eb_y + self.eb_h + int(16 * u)
+        bg.blit(early, (x, ly))
+        bg.blit(late, (r.right - self.pad - late.get_width(), ly))
 
-        self.static = pygame.Surface((self.W, self.H), 0, 32)
-        self.static.blit(bg, (0, 0))
-
-    def _rounded(self, w, h, color, radius, alpha=255):
-        s = pygame.Surface((w, h), pygame.SRCALPHA)
-        pygame.draw.rect(s, (*color, alpha), (0, 0, w, h), border_radius=radius)
-        return s
-
-    def note_sprite(self, column, color, dim=False):
-        key = (column, color, dim)
-        spr = self._sprite_cache.get(key)
-        if spr is None:
-            col = _scale(color, 0.35) if dim else color
-            if self.arrow:
-                spr = skins.make_arrow(self.note_w, self.directions[column], col)
-            else:
-                rad = int(6 * self.u)
-                spr = self._rounded(self.note_w, self.note_h, col, rad)
-                if not dim:
-                    pad = self.pad
-                    hl = self._rounded(self.note_w - 2 * pad, max(2, self.note_h // 3), _scale(col, 1.15), rad // 2)
-                    hl.set_alpha(120)
-                    spr.blit(hl, (pad, pad))
-            self._sprite_cache[key] = spr
-        return spr
-
-    def _build_sprites(self):
-        u = self.u
-        pad = int(self.col_w * 0.07) if self.arrow else max(1, int(3 * u))
-        w = self.col_w - pad * 2
-        rad = int(6 * u)
-        self.pad = pad
-        self.note_w = w
-        self._sprite_cache = {}
-        if self.arrow:
-            self.sprite_h = w
-            self.center_off = 0          # sprite centre sits on the time position
-        else:
-            self.sprite_h = self.note_h
-            self.center_off = self.note_h // 2  # bar bottom sits on the time position
-
-        # Arrow receptors and hit flashes
-        if self.arrow:
-            self.arrow_rec_up = [skins.make_receptor(w, d, False, self.colors[c])
-                                 for c, d in enumerate(self.directions)]
-            self.arrow_rec_down = [skins.make_receptor(w, d, True, self.colors[c])
-                                   for c, d in enumerate(self.directions)]
-            self.arrow_flash = []
-            for c, d in enumerate(self.directions):
-                big = int(w * 1.25)
-                spr = skins.make_arrow(big, d, (255, 255, 255), outline=(255, 255, 255), shine=False)
-                self.arrow_flash.append(spr)
-
-        # Key light beams (gradient above the judgement line)
-        beam_h = int(380 * u)
-        self.beams = []
-        for col in self.colors:
-            s = pygame.Surface((self.col_w, beam_h), pygame.SRCALPHA)
-            for y in range(beam_h):
-                a = int(110 * (y / beam_h) ** 2.2)
-                pygame.draw.line(s, (*col, a), (0, y), (self.col_w, y))
-            self.beams.append(s)
-        self.beam_h = beam_h
-
-        # Receptors
-        rh = int(1080 * u) - self.hit_y - int(60 * u)
-        self.receptor_h = rh
-        self.rec_up, self.rec_down = [], []
-        for col in self.colors:
-            self.rec_up.append(self._rounded(self.col_w - pad * 2, rh, _scale(col, 0.22), rad))
-            down = self._rounded(self.col_w - pad * 2, rh, _scale(col, 0.85), rad)
-            self.rec_down.append(down)
-
-        # Hit flash
-        fh = int(90 * u)
-        self.flash = []
-        for col in self.colors:
-            s = pygame.Surface((self.col_w, fh), pygame.SRCALPHA)
-            for y in range(fh):
-                d = abs(y - fh / 2) / (fh / 2)
-                a = int(200 * (1 - d) ** 2)
-                pygame.draw.line(s, (*_scale(col, 1.2), a), (0, y), (self.col_w, y))
-            self.flash.append(s)
-        self.flash_h = fh
+    # ---------- timeline ----------
 
     def _prepare_timeline(self):
         notes, res = self.bm.notes, self.res
@@ -301,26 +286,22 @@ class Scene:
         self.max_combo = 0
         self.last_judgement = None  # (judgement, time)
         self.recent_offsets = []    # (time, offset, judgement)
+        self.off_n = 0
+        self.off_sum = 0.0
+        self.off_sq = 0.0
         self.last_hit = [-10 ** 9] * self.keys
-        self.key_state = self.rep.frames
         self.frame_pos = 0
         self.cur_keys = 0
-        # Visible-window bookkeeping: notes sorted by time, sliding start index
         self.first_visible = 0
         ends = [(n.end if n.is_hold else n.time) for n in notes]
         self.max_len = max([e - n.time for e, n in zip(ends, notes)] + [0])
-        first = notes[0].time if notes else 0
-        last = max(ends) if ends else 0
-        self.map_start = first
-        self.map_end = last
-
-    # ---------- per frame ----------
+        self.map_start = notes[0].time if notes else 0
+        self.map_end = max(ends) if ends else 0
 
     def _advance(self, now):
-        res = self.res
+        res, rate = self.res, self.rep.rate
         while self.ev_pos < len(self.events) and res[self.events[self.ev_pos]].judged_at <= now:
-            i = self.events[self.ev_pos]
-            r = res[i]
+            r = res[self.events[self.ev_pos]]
             j = r.judgement
             self.counts[j] += 1
             if j == judge.MISS:
@@ -331,9 +312,12 @@ class Scene:
             self.last_judgement = (j, r.judged_at)
             if r.offset is not None and j != judge.MISS:
                 self.recent_offsets.append((r.judged_at, r.offset, j))
+                o = r.offset / rate
+                self.off_n += 1
+                self.off_sum += o
+                self.off_sq += o * o
             self.ev_pos += 1
-        # Column flashes on key-down of hits
-        frames = self.key_state
+        frames = self.rep.frames
         while self.frame_pos < len(frames) and frames[self.frame_pos][0] <= now:
             t, k = frames[self.frame_pos]
             newly = k & ~self.cur_keys
@@ -342,7 +326,7 @@ class Scene:
                     self.last_hit[c] = t
             self.cur_keys = k
             self.frame_pos += 1
-        cutoff = now - 4000 * self.rep.rate
+        cutoff = now - 4000 * rate
         if self.recent_offsets and self.recent_offsets[0][0] < cutoff:
             self.recent_offsets = [x for x in self.recent_offsets if x[0] >= cutoff]
 
@@ -353,53 +337,59 @@ class Scene:
         pts = sum(c * w for c, w in zip(self.counts, judge.ACC_WEIGHT))
         return 100.0 * pts / (300 * total)
 
+    def unstable_rate(self):
+        if self.off_n < 2:
+            return 0.0, 0.0
+        mean = self.off_sum / self.off_n
+        var = max(0.0, self.off_sq / self.off_n - mean * mean)
+        return 10 * math.sqrt(var), mean
+
+    # ---------- drawing ----------
+
     def draw(self, surf, now):
         self._advance(now)
-        u = self.u
         surf.blit(self.static, (0, 0))
-        rate = self.rep.rate
-        fx, cw, hy = self.field_x, self.col_w, self.hit_y
+        sk = self.skin
+        if sk.keys_under_notes:
+            sk.receptors(surf, self.cur_keys)
+        self._draw_notes(surf, now)
+        if not sk.keys_under_notes:
+            sk.receptors(surf, self.cur_keys)
+        sk.effects(surf, now, self.last_hit, self.rep.rate)
+        self._draw_combo_judgement(surf, now)
+        if self.card_w > 0:
+            self._draw_stats(surf, now)
+            self._draw_error_bar(surf, now)
+            if self.inputs:
+                self.inputs.draw(surf, now)
+        self._draw_progress(surf, now)
 
-        # Beams for held keys
-        for c in range(self.keys):
-            if self.cur_keys & (1 << c):
-                beam_bottom = hy + (self.sprite_h // 2 if self.arrow else 0)
-                surf.blit(self.beams[c], (fx + c * cw, beam_bottom - self.beam_h))
-
-        # Arrow receptors sit under the notes
-        if self.arrow:
-            for c in range(self.keys):
-                pressed = self.cur_keys & (1 << c)
-                spr = self.arrow_rec_down[c] if pressed else self.arrow_rec_up[c]
-                surf.blit(spr, (fx + c * cw + self.pad, hy - self.sprite_h // 2))
-
-        # Notes
-        notes, res = self.bm.notes, self.res
-        ncol = self.note_colors
-        ppm = self.px_per_ms
-        top_time = now + (hy + self.sprite_h) / ppm + 50
-        # Skip notes whose end has long passed
+    def _draw_notes(self, surf, now):
+        sk = self.skin
+        notes, res, ncol = self.bm.notes, self.res, self.note_colors
+        ppm, rc = self.px_per_ms, self.rc_y
+        top_time = now + (rc + 200 * self.u) / ppm
         while self.first_visible < len(notes) and notes[self.first_visible].time + self.max_len < now - 2000:
             self.first_visible += 1
-        sh, co = self.sprite_h, self.center_off
+        H = self.H
         for i in range(self.first_visible, len(notes)):
             n = notes[i]
             if n.time > top_time:
                 break
             r = res[i]
-            x = fx + n.column * cw + self.pad
+            c = n.column
+            cx = sk.col_x[c] + sk.col_w[c] / 2
             if not n.is_hold:
                 if r.judgement != judge.MISS and r.hit_time is not None and now >= r.hit_time:
                     continue
-                y = hy - (n.time - now) * ppm  # time position
-                top = int(y - co - sh / 2)
-                if top > self.H:
-                    continue
+                y = rc - (n.time - now) * ppm
                 dim = r.judgement == judge.MISS and now > n.time
-                surf.blit(self.note_sprite(n.column, ncol[i], dim), (x, top))
+                spr = sk.note(c, ncol[i], dim)
+                if y - spr.get_height() / 2 > H:
+                    continue
+                surf.blit(spr, (int(cx - spr.get_width() / 2), int(y - spr.get_height() / 2)))
                 continue
 
-            # Hold note
             held = (r.hit_time is not None and r.judgement != judge.MISS and
                     r.hit_time <= now < (r.release_time or 0))
             released = r.release_time is not None and now >= r.release_time
@@ -412,270 +402,153 @@ class Scene:
                 head_t = max(n.time, now)
             elif r.hit_time is not None and now >= r.hit_time and released:
                 head_t = max(n.time, r.release_time)
-            y_head = hy - (head_t - now) * ppm - co
-            y_tail = hy - (n.end - now) * ppm - co
-            if y_tail - sh > self.H:
+            y_head = rc - (head_t - now) * ppm
+            y_tail = rc - (n.end - now) * ppm
+            if y_tail - 100 * self.u > H:
                 continue
             missed = r.judgement == judge.MISS and now > n.time + self.win.w50
             dead = missed or (released and r.release_time < n.end)
-            col = ncol[i]
-            body_col = _scale(col, 0.25 if dead else (0.9 if held else 0.6))
-            bw = self.note_w
-            inset = int(bw * (0.25 if self.arrow else 0.12))
-            top, bottom = int(y_tail), int(y_head)
-            if bottom > top:
-                pygame.draw.rect(surf, body_col, (x + inset, top, bw - 2 * inset, bottom - top))
-            cap_h = int(14 * u) if self.arrow else int(10 * u)
-            pygame.draw.rect(surf, body_col, (x + inset, top - cap_h // 2, bw - 2 * inset, cap_h),
-                             border_radius=int(6 * u) if self.arrow else int(4 * u))
-            surf.blit(self.note_sprite(n.column, col, dead), (x, int(y_head - sh / 2)))
+            state = "dead" if dead else ("held" if held else "idle")
+            sk.body(surf, c, ncol[i], y_tail, y_head, state)
+            sk.tail(surf, c, ncol[i], y_tail, state)
+            spr = sk.note(c, ncol[i], dead, hold=True)
+            surf.blit(spr, (int(cx - spr.get_width() / 2), int(y_head - spr.get_height() / 2)))
 
-        # Bar receptors below the line, flashes
-        ry = hy + int(6 * u)
-        for c in range(self.keys):
-            age = (now - self.last_hit[c]) / rate
-            if not self.arrow:
-                pressed = self.cur_keys & (1 << c)
-                spr = self.rec_down[c] if pressed else self.rec_up[c]
-                surf.blit(spr, (fx + c * cw + self.pad, ry))
-                if 0 <= age < 140:
-                    fl = self.flash[c]
-                    fl.set_alpha(int(255 * (1 - age / 140)))
-                    surf.blit(fl, (fx + c * cw, hy - self.flash_h // 2))
-            elif 0 <= age < 160:
-                k = age / 160
-                fl = self.arrow_flash[c]
-                size = int(fl.get_width() * (0.85 + 0.25 * k))
-                spr = pygame.transform.smoothscale(fl, (size, size))
-                spr.set_alpha(int(150 * (1 - k)))
-                cxc = fx + c * cw + cw // 2
-                surf.blit(spr, (cxc - size // 2, hy - size // 2))
-
-        if self.inputs:
-            self.inputs.draw(surf, now)
-
-        cx = self.W // 2
-        # Judgement popup
+    def _draw_combo_judgement(self, surf, now):
+        sk, u, rate = self.skin, self.u, self.rep.rate
+        cx = sk.field_x + sk.field_w // 2
         if self.last_judgement:
             j, t = self.last_judgement
             age = (now - t) / rate
             if age < 450:
-                txt = self.text(self.f_judge, judge.NAMES[j], JUDGE_COLORS[j])
-                grow = 1.0 + 0.25 * max(0.0, 1 - age / 80)
+                spr = sk.judgement(j) or self.text(self.f_judge, judge.NAMES[j], JUDGE_COLORS[j])
+                grow = 1.0 + 0.2 * max(0.0, 1 - age / 80)
                 if grow > 1.001:
-                    txt = pygame.transform.smoothscale(
-                        txt, (int(txt.get_width() * grow), int(txt.get_height() * grow)))
+                    spr = pygame.transform.smoothscale(
+                        spr, (int(spr.get_width() * grow), int(spr.get_height() * grow)))
                 alpha = 255 if age < 300 else int(255 * (1 - (age - 300) / 150))
-                txt.set_alpha(alpha)
-                surf.blit(txt, (cx - txt.get_width() // 2, int(560 * u) - txt.get_height() // 2))
-                txt.set_alpha(255)
-
-        # Combo
+                spr.set_alpha(alpha)
+                surf.blit(spr, (cx - spr.get_width() // 2, sk.judge_y - spr.get_height() // 2))
+                spr.set_alpha(None)
         if self.combo >= 2:
-            c = self.text(self.f_combo, str(self.combo), (255, 255, 255))
-            surf.blit(c, (cx - c.get_width() // 2, int(380 * u)))
+            spr = sk.combo(self.combo) or self.text(self.f_combo, str(self.combo), TEXT)
+            spr.set_alpha(215)
+            surf.blit(spr, (cx - spr.get_width() // 2, sk.combo_y - spr.get_height() // 2))
+            spr.set_alpha(None)
 
-        # Hit error bar ticks
-        ebx, eby = cx, self.eb_y
+    def _draw_stats(self, surf, now):
+        u, r = self.u, self.stats_rect
+        x, right = r.x + self.pad, r.right - self.pad
+        y = r.y + int(18 * u)
+        surf.blit(self.text(self.f_label, "ACCURACY", MUTED), (x, y))
+        rate = self.rep.rate
+        elapsed = (now - self.map_start) / 1000 / rate
+        total = (self.map_end - self.map_start) / 1000 / rate
+        t = self.text(self.f_label, f"{_fmt_time(min(elapsed, total))} / {_fmt_time(total)}", MUTED)
+        surf.blit(t, (right - t.get_width(), y))
+        y += int(22 * u)
+        surf.blit(self.text(self.f_huge, f"{self.accuracy():.2f}%", TEXT), (x, y))
+        y += int(84 * u)
+
+        total_j = max(1, sum(self.counts))
+        bar_x = x + int(90 * u)
+        bar_w = right - bar_x - int(70 * u)
+        for j in range(6):
+            surf.blit(self.text(self.f_small_b, judge.NAMES[j], JUDGE_COLORS[j]), (x, y))
+            v = self.text(self.f_small_b, str(self.counts[j]), TEXT)
+            surf.blit(v, (right - v.get_width(), y))
+            by = y + int(11 * u)
+            pygame.draw.rect(surf, (40, 42, 54), (bar_x, by, bar_w, int(6 * u)), border_radius=int(3 * u))
+            fill = int(bar_w * self.counts[j] / total_j)
+            if fill > 0:
+                pygame.draw.rect(surf, JUDGE_COLORS[j], (bar_x, by, fill, int(6 * u)), border_radius=int(3 * u))
+            y += int(36 * u)
+
+        y += int(10 * u)
+        pygame.draw.line(surf, (60, 62, 76), (x, y), (right, y))
+        y += int(16 * u)
+        ur, mean = self.unstable_rate()
+        cells = [("COMBO", str(self.combo)), ("MAX COMBO", str(self.max_combo)),
+                 ("UR", f"{ur:.1f}"), ("MEAN", f"{mean:+.1f} ms")]
+        col_w = (right - x) // 2
+        for k, (label, value) in enumerate(cells):
+            cx = x + (k % 2) * col_w
+            cy = y + (k // 2) * int(62 * u)
+            surf.blit(self.text(self.f_label, label, MUTED), (cx, cy))
+            surf.blit(self.text(self.f_med, value, TEXT), (cx, cy + int(20 * u)))
+
+    def _draw_error_bar(self, surf, now):
+        u, rate = self.u, self.rep.rate
+        w50 = self.win.w50
+        tick_w = max(2, int(3 * u))
         for t, off, j in self.recent_offsets:
             age = (now - t) / rate
             if age < 0:
                 continue
-            a = max(0, int(230 * (1 - age / 4000)))
+            a = int(230 * (1 - age / 4000))
             if a <= 0:
                 continue
-            xx = ebx + int(max(-self.win.w50, min(self.win.w50, off)) * self.eb_scale)
-            tick = pygame.Surface((max(2, int(3 * u)), self.eb_h + int(14 * u)))
-            tick.fill((255, 255, 255) if j == judge.MAX else JUDGE_COLORS[j])
-            tick.set_alpha(a)
-            surf.blit(tick, (xx - 1, eby - int(7 * u)))
-
-        self._draw_side_panel(surf)
-        self._draw_progress(surf, now)
-
-    def _draw_side_panel(self, surf):
-        u = self.u
-        x = self.field_x + self.field_w + int(60 * u)
-        y = int(300 * u)
-        acc = self.text(self.f_big, f"{self.accuracy():.2f}%", (255, 255, 255))
-        surf.blit(acc, (x, y))
-        y += int(70 * u)
-        for j in range(6):
-            name = self.text(self.f_small, judge.NAMES[j], JUDGE_COLORS[j])
-            val = self.text(self.f_small, str(self.counts[j]), (240, 240, 245))
-            surf.blit(name, (x, y))
-            surf.blit(val, (x + int(110 * u), y))
-            y += int(34 * u)
-        y += int(14 * u)
-        mc = self.text(self.f_small, f"Max combo  {self.max_combo}", (200, 205, 220))
-        surf.blit(mc, (x, y))
+            xx = self.eb_cx + int(max(-w50, min(w50, off)) * self.eb_scale)
+            tick = pygame.Surface((tick_w, self.eb_h + int(14 * u)), pygame.SRCALPHA, 32)
+            tick.fill((*((255, 255, 255) if j == judge.MAX else JUDGE_COLORS[j]), a))
+            surf.blit(tick, (xx - tick_w // 2, self.eb_y - int(7 * u)))
+        _, mean = self.unstable_rate()
+        if self.off_n >= 2:
+            mx = self.eb_cx + int(max(-w50, min(w50, mean * rate)) * self.eb_scale)
+            ty = self.eb_y - int(12 * u)
+            s = int(7 * u)
+            pygame.draw.polygon(surf, GOLD, [(mx - s, ty - s), (mx + s, ty - s), (mx, ty)])
 
     def _draw_progress(self, surf, now):
         span = max(1, self.map_end - self.map_start)
         p = max(0.0, min(1.0, (now - self.map_start) / span))
-        h = max(3, int(5 * self.u))
-        pygame.draw.rect(surf, (40, 40, 55), (0, 0, self.W, h))
-        pygame.draw.rect(surf, BLUE, (0, 0, int(self.W * p), h))
+        h = max(3, int(4 * self.u))
+        pygame.draw.rect(surf, (30, 30, 42), (0, 0, self.W, h))
+        pygame.draw.rect(surf, skins.BLUE, (0, 0, int(self.W * p), h))
 
     def draw_results(self, surf, now, fade):
-        """Results overlay shown after the map ends. fade goes 0..1."""
+        """Results card shown after the map ends. fade goes 0..1."""
         self.draw(surf, now)
         u = self.u
-        shade = pygame.Surface((self.W, self.H))
-        shade.fill((6, 6, 12))
-        shade.set_alpha(int(245 * fade))
+        shade = pygame.Surface((self.W, self.H), pygame.SRCALPHA, 32)
+        shade.fill((6, 6, 12, int(225 * fade)))
         surf.blit(shade, (0, 0))
         if fade <= 0.05:
             return
-        a = int(255 * fade)
         rep, bm = self.rep, self.bm
-        cx = self.W // 2
-        y = int(180 * u)
+        layer = pygame.Surface((self.W, self.H), pygame.SRCALPHA)
+        cw, ch = int(720 * u), int(560 * u)
+        rect = pygame.Rect((self.W - cw) // 2, (self.H - ch) // 2, cw, ch)
+        self.card(layer, rect)
+        cx = rect.centerx
+        y = rect.y + int(34 * u)
 
-        def line(font, s, color, gap):
+        def center(t, gap):
             nonlocal y
-            t = self.text(font, s, color)
-            t.set_alpha(a)
-            surf.blit(t, (cx - t.get_width() // 2, y))
-            t.set_alpha(255)
+            layer.blit(t, (cx - t.get_width() // 2, y))
             y += int(gap * u)
 
-        line(self.f_med, f"{bm.artist} - {bm.title} [{bm.version}]", (255, 255, 255), 50)
+        maxw = cw - 2 * self.pad
+        center(self.text(self.f_title, self.fit(self.f_title, f"{bm.artist} - {bm.title}", maxw), TEXT), 40)
+        center(self.text(self.f_small_b, self.fit(self.f_small_b, f"[{bm.version}]", maxw), GOLD), 34)
         mods = f"  +{rep.mod_string}" if rep.mod_string else ""
-        line(self.f_small, f"Played by {rep.player}{mods}", (200, 205, 220), 70)
-        line(self.f_combo, f"{rep.score:,}".replace(",", "."), (255, 255, 255), 100)
+        center(self.text(self.f_small, f"played by {rep.player}{mods}", MUTED), 50)
+        center(self.text(self.f_combo, f"{rep.score:,}".replace(",", "."), TEXT), 92)
         stats = [rep.count_geki, rep.count_300, rep.count_katu, rep.count_100, rep.count_50, rep.count_miss]
         total = sum(stats) or 1
         acc = 100 * sum(c * w for c, w in zip(stats, judge.ACC_WEIGHT)) / (300 * total)
-        line(self.f_big, f"{acc:.2f}%", GOLD, 80)
+        center(self.text(self.f_big, f"{acc:.2f}%", GOLD), 74)
+
+        colx = [rect.x + int(120 * u), rect.x + cw // 2 + int(60 * u)]
         for j in range(6):
-            line(self.f_med, f"{judge.NAMES[j]}   {stats[j]}", JUDGE_COLORS[j], 42)
-        y += int(20 * u)
-        fc = "  (Full Combo)" if rep.perfect else ""
-        line(self.f_med, f"Max combo {rep.max_combo}{fc}", (230, 230, 240), 40)
-
-
-# ---------- ffmpeg ----------
-
-def _vaapi_device() -> str | None:
-    for i in range(128, 136):
-        dev = f"/dev/dri/renderD{i}"
-        if os.path.exists(dev) and os.access(dev, os.R_OK | os.W_OK):
-            return dev
-    return None
-
-
-def _probe_sample_rate(path: Path) -> int:
-    try:
-        out = subprocess.run(
-            ["ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries",
-             "stream=sample_rate", "-of", "default=nw=1:nk=1", str(path)],
-            capture_output=True, text=True, timeout=20).stdout.strip()
-        return int(out)
-    except (ValueError, OSError, subprocess.SubprocessError):
-        return 44100
-
-
-def _ffmpeg_cmd(opts, out_path, audio_path, audio_start_ms, video_seconds, rate, nightcore, encoder):
-    W, H = opts.width, opts.height
-    cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y"]
-    if encoder == "vaapi":
-        cmd += ["-vaapi_device", _vaapi_device()]
-    cmd += ["-f", "rawvideo", "-pix_fmt", "bgr0", "-s", f"{W}x{H}", "-r", str(opts.fps), "-i", "-"]
-
-    has_audio = audio_path is not None and audio_path.is_file()
-    if has_audio:
-        start = audio_start_ms / 1000.0
-        if start > 0:
-            cmd += ["-ss", f"{start:.3f}"]
-        cmd += ["-i", str(audio_path)]
-        filters = []
-        if start < 0:
-            ms = int(-start * 1000)
-            filters.append(f"adelay={ms}:all=1")
-        if rate != 1.0:
-            if nightcore:
-                sr = _probe_sample_rate(audio_path)
-                filters.append(f"asetrate={int(sr * rate)},aresample={sr}")
-            else:
-                filters.append(f"atempo={rate}")
-        fade_start = max(0.0, video_seconds - opts.results_s)
-        filters.append(f"afade=t=out:st={fade_start:.3f}:d={min(3.0, opts.results_s):.3f}")
-        filters.append("apad")
-        cmd += ["-filter:a", ",".join(filters), "-map", "0:v", "-map", "1:a", "-c:a", "aac", "-b:a", "192k",
-                "-shortest"]
-
-    if encoder == "vaapi":
-        cmd += ["-vf", "format=nv12,hwupload", "-c:v", "h264_vaapi", "-rc_mode", "CQP", "-qp", str(opts.quality)]
-    else:
-        cmd += ["-c:v", "libx264", "-preset", "veryfast", "-crf", str(max(0, opts.quality - 2)),
-                "-pix_fmt", "yuv420p"]
-    cmd += ["-movflags", "+faststart", str(out_path)]
-    return cmd
-
-
-def pick_encoder(choice: str) -> str:
-    if choice in ("vaapi", "x264"):
-        return choice
-    if _vaapi_device():
-        test = subprocess.run(
-            ["ffmpeg", "-hide_banner", "-loglevel", "error", "-vaapi_device", _vaapi_device(),
-             "-f", "lavfi", "-i", "color=black:s=256x256:d=0.1", "-vf", "format=nv12,hwupload",
-             "-c:v", "h264_vaapi", "-f", "null", "-"], capture_output=True, timeout=30)
-        if test.returncode == 0:
-            return "vaapi"
-    return "x264"
-
-
-def render_video(bm, replay, results, win, out_path: Path, opts: RenderOptions, progress=None):
-    from .osr import MOD_NC
-
-    scene = Scene(bm, replay, results, win, opts)
-    rate = replay.rate
-    lead = 2000 * rate
-    start = opts.start_ms if opts.start_ms is not None else scene.map_start - lead
-    end = scene.map_end + 1500 * rate
-    play_seconds = (end - start) / 1000.0 / rate
-    if opts.duration_s is not None:
-        play_seconds = min(play_seconds, opts.duration_s)
-        results_s = 0.0
-    else:
-        results_s = opts.results_s
-    total_seconds = play_seconds + results_s
-    n_frames = int(total_seconds * opts.fps)
-    n_play = int(play_seconds * opts.fps)
-
-    encoder = pick_encoder(opts.encoder)
-    opts_r = RenderOptions(**{**opts.__dict__, "results_s": results_s})
-    # Audio: map time `start` corresponds to video time 0.
-    audio_start = (start + opts.offset_ms)
-    cmd = _ffmpeg_cmd(opts_r, out_path, bm.audio_path, audio_start, total_seconds, rate,
-                      bool(replay.mods & MOD_NC), encoder)
-
-    surf = pygame.Surface((opts.width, opts.height), 0, 32)
-    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
-    t0 = time.time()
-    last_report = 0.0
-    try:
-        for f in range(n_frames):
-            vt = f / opts.fps
-            if f < n_play:
-                now = start + vt * 1000 * rate
-                scene.draw(surf, now)
-            else:
-                now = start + play_seconds * 1000 * rate
-                fade = min(1.0, (vt - play_seconds) / 0.6)
-                scene.draw_results(surf, now, fade)
-            proc.stdin.write(surf.get_buffer().raw)
-            el = time.time() - t0
-            if progress and (el - last_report > 0.5 or f == n_frames - 1):
-                last_report = el
-                progress(f + 1, n_frames, el, encoder)
-        proc.stdin.close()
-    except BrokenPipeError:
-        pass
-    finally:
-        code = proc.wait()
-    if code != 0:
-        raise RuntimeError(f"ffmpeg failed with exit code {code}")
-    return encoder
+            col, row = j % 2, j // 2
+            yy = y + row * int(42 * u)
+            layer.blit(self.text(self.f_med, judge.NAMES[j], JUDGE_COLORS[j]), (colx[col], yy))
+            v = self.text(self.f_med, str(stats[j]), TEXT)
+            layer.blit(v, (colx[col] + int(190 * u) - v.get_width(), yy))
+        y += 3 * int(42 * u) + int(26 * u)
+        ur, _ = self.unstable_rate()
+        fc = "  Full Combo" if rep.perfect else ""
+        center(self.text(self.f_med, f"Max combo {rep.max_combo}   UR {ur:.1f}{fc}", (220, 222, 232)), 40)
+        layer.set_alpha(int(255 * fade))
+        surf.blit(layer, (0, 0))
