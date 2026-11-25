@@ -213,6 +213,23 @@ class OsuSkin:
             self.keys_up.append(self._cropped(_scale_w(ku, w)) if ku else None)
             self.keys_down.append(self._cropped(_scale_w(kd, w)) if kd else None)
 
+        # Plain hold end: close the body with an edge matching its side borders instead of the skin's tail image
+        self.plain_end = getattr(scene.o, "ln_end", "plain") == "plain"
+        self.end_caps = []
+        for c in range(k):
+            b = self.bodies[c]
+            if not b:
+                self.end_caps.append(None)
+                continue
+            r = b[0].get_bounding_rect()
+            t = max(2, round(self.col_w[c] * 3 / 140))
+            caps = []
+            for alpha in (191, 70):
+                cap = pygame.Surface((max(1, r.width), t), pygame.SRCALPHA, 32)
+                pygame.draw.rect(cap, (255, 255, 255, alpha), cap.get_rect(), border_radius=t)
+                caps.append(cap)
+            self.end_caps.append((r.x, caps))
+
         # Note centre sits on the receptor when its bottom edge reaches HitPosition.
         self.rc_y = self.hit_y - self.notes[0][0].get_height() // 2
 
@@ -299,6 +316,10 @@ class OsuSkin:
         surf.blit(pygame.transform.scale(img, (img.get_width(), h)), (self.col_x[c], int(top)))
 
     def tail(self, surf, c, color, y, state):
+        if self.plain_end and self.end_caps[c]:
+            x_off, caps = self.end_caps[c]
+            surf.blit(caps[1 if state == "dead" else 0], (self.col_x[c] + x_off, int(y)))
+            return
         if not self.tails[c]:
             return
         img = self.tails[c][1 if state == "dead" else 0]

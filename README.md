@@ -43,6 +43,7 @@ Skins:
 mania2mp4 --set-default-skin MySkin.osk   # installs to ~/.local/share/mania2mp4/skins and makes it the default
 mania2mp4 --list-skins
 mania2mp4 replay.osr --skin arrow          # use another skin just once
+mania2mp4 replay.osr --ln-end skin         # long notes with the skin's own tail image (default: plain edge)
 ```
 
 Run `mania2mp4 --help` for all options (`--offset` for audio sync, `--dim`, `--quality`, `--encoder`, `--beatmap`, `--songs`).

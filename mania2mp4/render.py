@@ -64,6 +64,7 @@ class RenderOptions:
     colors: str | None = None       # "snap" or "column"; default depends on the skin
     show_inputs: bool = True
     key_labels: list | None = None
+    ln_end: str = "plain"           # osu! skins: "plain" closes hold bodies with a simple edge, "skin" uses the tail image
 
 
 def make_skin(scene, spec: str):

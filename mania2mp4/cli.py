@@ -112,7 +112,7 @@ def convert(replay_path: Path, args, gui: bool) -> Path:
                          encoder=args.encoder, quality=args.quality, offset_ms=args.offset,
                          start_ms=args.start * 1000 if args.start is not None else None,
                          duration_s=args.duration, skin=args.skin, colors=args.colors,
-                         show_inputs=not args.no_inputs, key_labels=labels)
+                         show_inputs=not args.no_inputs, key_labels=labels, ln_end=args.ln_end)
 
     def progress(done, total, elapsed, encoder):
         pct = done / total
@@ -147,6 +147,8 @@ def main(argv=None):
     p.add_argument("--list-skins", action="store_true", help="show installed osu! skins and exit")
     p.add_argument("--colors", choices=["snap", "column"],
                    help="note colours: by rhythm (snap, default for arrows) or by column (default for bars)")
+    p.add_argument("--ln-end", choices=["plain", "skin"], default="plain",
+                   help="osu! skins: end of long notes, plain edge (default) or the skin's tail image")
     p.add_argument("--no-inputs", action="store_true", help="hide the keyboard input overlay")
     p.add_argument("--keys", help='key labels for the input overlay, e.g. "D F J K" (default: read from osu! config)')
     p.add_argument("-r", "--resolution", default="1920x1080", help="video size, e.g. 1280x720 or 2560x1440")
