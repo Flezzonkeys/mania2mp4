@@ -235,15 +235,17 @@ class Scene:
 
         # Playfield
         field = pygame.Surface((sk.field_w, self.H), pygame.SRCALPHA)
-        field.fill((0, 0, 0, 205))
-        for c in range(1, self.keys):
-            x = sk.col_x[c] - sk.field_x
-            pygame.draw.line(field, (255, 255, 255, 16), (x, 0), (x, self.H))
+        field.fill((0, 0, 0, sk.field_alpha))
+        if sk.column_lines:
+            for c in range(1, self.keys):
+                x = sk.col_x[c] - sk.field_x
+                pygame.draw.line(field, (255, 255, 255, 16), (x, 0), (x, self.H))
         bg.blit(field, (sk.field_x, 0))
-        edge = (95, 98, 115)
-        lw = max(1, int(2 * u))
-        pygame.draw.line(bg, edge, (sk.field_x - 1, 0), (sk.field_x - 1, self.H), lw)
-        pygame.draw.line(bg, edge, (sk.field_x + sk.field_w, 0), (sk.field_x + sk.field_w, self.H), lw)
+        if sk.column_lines:
+            edge = (95, 98, 115)
+            lw = max(1, int(2 * u))
+            pygame.draw.line(bg, edge, (sk.field_x - 1, 0), (sk.field_x - 1, self.H), lw)
+            pygame.draw.line(bg, edge, (sk.field_x + sk.field_w, 0), (sk.field_x + sk.field_w, self.H), lw)
         sk.stage(bg)
 
         if self.card_w > 0:

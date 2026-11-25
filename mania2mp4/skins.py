@@ -12,6 +12,7 @@ Every skin exposes the same interface, used by render.Scene:
   effects(surf, now, last_hit, rate)
   judgement(j) / combo(n)          sprites, or None to let the scene draw text
   stage(bg)                        static decoration drawn once
+  field_alpha, column_lines        playfield opacity (0..255) and whether to draw column/edge lines
 """
 
 import bisect
@@ -160,6 +161,8 @@ def make_receptor(size: int, direction: str, pressed: bool, color):
 class _Builtin:
     keys_under_notes = False
     uses_snap = False
+    field_alpha = 205      # playfield darkness over the map background
+    column_lines = True    # thin separators between columns and stage edges
 
     def __init__(self, scene):
         self.scene = scene

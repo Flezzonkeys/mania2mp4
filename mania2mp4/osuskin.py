@@ -149,6 +149,7 @@ def _scale_w(surf, width):
 
 class OsuSkin:
     uses_snap = False
+    field_alpha = 255      # solid black stage, no background showing between notes
 
     def __init__(self, scene, skin_dir: Path):
         self.scene = scene
@@ -180,6 +181,8 @@ class OsuSkin:
         hit_y = float(mania.get("HitPosition", "402")) * s
         self.keys_under_notes = mania.get("KeysUnderNotes", "0") == "1"
         self.judgement_line = mania.get("JudgementLine", "1") == "1"
+        line_w = [float(x) for x in mania.get("ColumnLineWidth", "2").split(",") if x.strip()]
+        self.column_lines = any(w > 0 for w in line_w)
         self.hit_y = int(hit_y)
         self.judge_y = int(float(mania.get("ScorePosition", "240")) * s)
         self.combo_y = int(float(mania.get("ComboPosition", "180")) * s)
