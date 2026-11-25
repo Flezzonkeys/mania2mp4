@@ -44,7 +44,7 @@ Skins:
 mania2mp4 --set-default-skin MySkin.osk   # installs to ~/.local/share/mania2mp4/skins and makes it the default
 mania2mp4 --list-skins
 mania2mp4 replay.osr --skin arrow          # use another skin just once
-mania2mp4 replay.osr --ln-end skin         # long notes with the skin's own tail image (default: plain edge)
+mania2mp4 replay.osr --ln-end skin         # long note ends: fade (default), plain or the skin's tail image
 ```
 
 Run `mania2mp4 --help` for all options (`--offset` for audio sync, `--dim`, `--quality`, `--encoder`, `--beatmap`, `--songs`).

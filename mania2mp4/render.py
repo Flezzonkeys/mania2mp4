@@ -98,7 +98,7 @@ class RenderOptions:
     show_inputs: bool = True
     key_labels: list | None = None
     flag: str | None = None         # country code for a small flag next to the player name, e.g. "de"
-    ln_end: str = "plain"           # osu! skins: "plain" closes hold bodies with a simple edge, "skin" uses the tail image
+    ln_end: str = "fade"            # osu! skins: "fade" (soft end), "plain" (simple edge) or "skin" (tail image)
 
 
 def make_skin(scene, spec: str):

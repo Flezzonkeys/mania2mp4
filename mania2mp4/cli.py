@@ -147,8 +147,8 @@ def main(argv=None):
     p.add_argument("--list-skins", action="store_true", help="show installed osu! skins and exit")
     p.add_argument("--colors", choices=["snap", "column"],
                    help="note colours: by rhythm (snap, default for arrows) or by column (default for bars)")
-    p.add_argument("--ln-end", choices=["plain", "skin"], default="plain",
-                   help="osu! skins: end of long notes, plain edge (default) or the skin's tail image")
+    p.add_argument("--ln-end", choices=["fade", "plain", "skin"], default="fade",
+                   help="osu! skins: end of long notes: soft fade (default), plain edge or the skin's tail image")
     p.add_argument("--flag", help='country flag next to the player name, e.g. "de" (saved default from --set-flag)')
     p.add_argument("--set-flag", metavar="CODE", help='remember a default flag ("none" to remove) and exit')
     p.add_argument("--no-inputs", action="store_true", help="hide the keyboard input overlay")

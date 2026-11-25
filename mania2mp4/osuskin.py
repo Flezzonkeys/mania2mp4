@@ -214,7 +214,26 @@ class OsuSkin:
             self.keys_down.append(self._cropped(_scale_w(kd, w)) if kd else None)
 
         # Plain hold end: close the body with an edge matching its side borders instead of the skin's tail image
-        self.plain_end = getattr(scene.o, "ln_end", "plain") == "plain"
+        ln_end = getattr(scene.o, "ln_end", "fade")
+        self.plain_end = ln_end == "plain"
+        self.fade_end = ln_end == "fade"
+        # Fade end: the top part of the body image with an alpha ramp (transparent at the tail)
+        self.fade_len = int(self.col_w[0] * 0.6)
+        self.fade_caps = []
+        for c in range(k):
+            b = self.bodies[c]
+            if not b:
+                self.fade_caps.append(None)
+                continue
+            pair = []
+            for img in b:
+                cap = _native(pygame.transform.scale(img, (img.get_width(), self.fade_len)))
+                alpha = pygame.surfarray.pixels_alpha(cap)
+                for yy in range(self.fade_len):
+                    alpha[:, yy] = (alpha[:, yy].astype("float32") * (yy / self.fade_len) ** 1.3).astype("uint8")
+                del alpha
+                pair.append(cap)
+            self.fade_caps.append(pair)
         self.end_caps = []
         for c in range(k):
             b = self.bodies[c]
@@ -309,13 +328,27 @@ class OsuSkin:
     def body(self, surf, c, color, top, bottom, state):
         if bottom <= top or not self.bodies[c]:
             return
-        img = self.bodies[c][1 if state == "dead" else 0]
+        i = 1 if state == "dead" else 0
+        img = self.bodies[c][i]
         h = int(bottom - top)
         if h < 1:
             return
-        surf.blit(pygame.transform.scale(img, (img.get_width(), h)), (self.col_x[c], int(top)))
+        x, top = self.col_x[c], int(top)
+        if self.fade_end and self.fade_caps[c]:
+            cap = self.fade_caps[c][i]
+            # Fade over at most 45 % of the body so short notes keep a solid part
+            fl = min(self.fade_len, int(h * 0.45))
+            if fl >= 2:
+                if fl != self.fade_len:
+                    cap = pygame.transform.scale(cap, (cap.get_width(), fl))
+                surf.blit(cap, (x, top))
+                top += fl
+                h -= fl
+        surf.blit(pygame.transform.scale(img, (img.get_width(), h)), (x, top))
 
     def tail(self, surf, c, color, y, state):
+        if self.fade_end:
+            return
         if self.plain_end and self.end_caps[c]:
             x_off, caps = self.end_caps[c]
             surf.blit(caps[1 if state == "dead" else 0], (self.col_x[c] + x_off, int(y)))
