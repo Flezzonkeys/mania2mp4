@@ -22,7 +22,7 @@ Render osu!mania replays (`.osr`) to MP4 videos on Linux.
 ./install.sh
 ```
 
-This adds the `mania2mp4` command to `~/.local/bin`, an app menu entry and a "Convert to MP4" action when you right-click an `.osr` file in Dolphin.
+This adds the `mania2mp4` command to `~/.local/bin`, an app menu entry and a "Convert to MP4" action when you right-click an `.osr` file in Dolphin. Started from the menu or Dolphin, a progress window with a cancel button shows how far the render is.
 
 ## Usage
 

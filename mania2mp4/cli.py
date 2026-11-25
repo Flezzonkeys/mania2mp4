@@ -53,6 +53,49 @@ def _notify(title, body, gui):
         subprocess.run(["notify-send", "-a", "mania2mp4", "-i", "video-x-generic", title, body], check=False)
 
 
+class Cancelled(Exception):
+    pass
+
+
+class ProgressWindow:
+    """KDE progress dialog (kdialog --progressbar), controlled over D-Bus with qdbus6."""
+
+    IFACE = "org.kde.kdialog.ProgressDialog"
+
+    def __init__(self, title: str, label: str):
+        self.ref = None
+        if not (shutil.which("kdialog") and shutil.which("qdbus6")):
+            return
+        try:
+            out = subprocess.run(["kdialog", "--title", title, "--progressbar", label, "100"],
+                                 capture_output=True, text=True, timeout=10).stdout.split()
+        except (OSError, subprocess.SubprocessError):
+            return
+        if len(out) == 2:
+            self.ref = out
+            self._call("showCancelButton", "true")
+
+    def _call(self, *args) -> str:
+        if not self.ref:
+            return ""
+        try:
+            return subprocess.run(["qdbus6", *self.ref, *args], capture_output=True, text=True,
+                                  timeout=5).stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            return ""
+
+    def update(self, percent: int, label: str):
+        self._call("org.freedesktop.DBus.Properties.Set", self.IFACE, "value", str(percent))
+        self._call("setLabelText", label)
+
+    def cancelled(self) -> bool:
+        return self._call("wasCancelled") == "true"
+
+    def close(self):
+        self._call("close")
+        self.ref = None
+
+
 def _pick_replay() -> Path | None:
     if not shutil.which("kdialog"):
         return None
@@ -123,6 +166,9 @@ def convert(replay_path: Path, args, gui: bool) -> Path:
                          duration_s=args.duration, skin=args.skin, colors=args.colors,
                          show_inputs=not args.no_inputs, key_labels=labels, ln_end=args.ln_end, flag=args.flag)
 
+    window = ProgressWindow("mania2mp4", f"Rendering {bm.title} [{bm.version}]...") if gui else None
+    last_gui = [0.0]
+
     def progress(done, total, elapsed, encoder):
         pct = done / total
         fps = done / elapsed if elapsed > 0 else 0
@@ -130,9 +176,21 @@ def convert(replay_path: Path, args, gui: bool) -> Path:
         bar = "#" * int(pct * 30)
         sys.stdout.write(f"\r[{bar:<30}] {pct * 100:5.1f}%  {fps:5.0f} fps  ETA {eta:4.0f}s  ({encoder})")
         sys.stdout.flush()
+        if window and (elapsed - last_gui[0] >= 1.0 or done == total):
+            last_gui[0] = elapsed
+            if window.cancelled():
+                raise Cancelled("Rendering cancelled")
+            window.update(int(pct * 100), f"Rendering {bm.title} [{bm.version}]\n"
+                                          f"{int(pct * 100)} %, about {int(eta)} s left")
 
-    _notify("Rendering replay", f"{bm.title} [{bm.version}]", gui)
-    render_video(bm, rep, results, win, out, opts, progress=progress)
+    try:
+        render_video(bm, rep, results, win, out, opts, progress=progress)
+    except Cancelled:
+        out.unlink(missing_ok=True)  # remove the unfinished video
+        raise
+    finally:
+        if window:
+            window.close()
     print(f"\nSaved: {out}")
     return out
 
