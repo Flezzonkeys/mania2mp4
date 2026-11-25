@@ -26,9 +26,11 @@ This adds the `mania2mp4` command to `~/.local/bin`, an app menu entry and a "Co
 
 ## Usage
 
+Videos are always saved to `osu-replays` inside your Videos folder (from `xdg-user-dir VIDEOS`, fallback `~/Videos`).
+
 ```sh
-mania2mp4 "replay.osr"                     # saves to ~/Videos/osu-replays
-mania2mp4 *.osr -o ~/Videos                # several replays
+mania2mp4 "replay.osr"
+mania2mp4 *.osr                            # several replays
 mania2mp4 replay.osr --scroll-ms 380       # faster scroll speed
 mania2mp4 replay.osr -r 2560x1440 --fps 120
 mania2mp4 replay.osr --start 60 --duration 10   # quick 10 s preview

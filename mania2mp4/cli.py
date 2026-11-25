@@ -20,7 +20,19 @@ from .render import RenderOptions
 from .video import render_video
 
 DEFAULT_REPLAYS = Path.home() / ".local/share/osu-wine/osu!/Replays"
-DEFAULT_OUT = Path.home() / "Videos/osu-replays"
+def videos_dir() -> Path:
+    """The user's Videos folder from the XDG settings (falls back to ~/Videos)."""
+    if shutil.which("xdg-user-dir"):
+        try:
+            out = subprocess.run(["xdg-user-dir", "VIDEOS"], capture_output=True, text=True, timeout=5).stdout.strip()
+            if out and Path(out).is_dir() and Path(out) != Path.home():
+                return Path(out)
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return Path.home() / "Videos"
+
+
+OUTPUT_DIR = videos_dir() / "osu-replays"  # videos are always saved here
 CONFIG_FILE = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "mania2mp4" / "config.json"
 
 
@@ -91,14 +103,11 @@ def convert(replay_path: Path, args, gui: bool) -> Path:
         print(f"Note: re-simulated judgements {sim} differ from the replay {expected}; "
               f"the video shows the simulation.", file=sys.stderr)
 
-    if args.output:
-        out = Path(args.output)
-        if out.is_dir():
-            out = out / _default_name(rep, bm)
-    else:
-        DEFAULT_OUT.mkdir(parents=True, exist_ok=True)
-        out = DEFAULT_OUT / _default_name(rep, bm)
-    out.parent.mkdir(parents=True, exist_ok=True)
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    name = _default_name(rep, bm)
+    if args.start is not None or args.duration is not None:
+        name = name[:-4] + " (preview).mp4"
+    out = OUTPUT_DIR / name
 
     if args.keys:
         labels = args.keys.split()
@@ -135,9 +144,9 @@ def _default_name(rep, bm) -> str:
 
 
 def main(argv=None):
-    p = argparse.ArgumentParser(prog="mania2mp4", description="Render osu!mania replays (.osr) to MP4 videos.")
+    p = argparse.ArgumentParser(prog="mania2mp4", description="Render osu!mania replays (.osr) to MP4 videos. Videos are saved to "
+                                             f"{OUTPUT_DIR}.")
     p.add_argument("replays", nargs="*", help=".osr files (opens a file picker if empty)")
-    p.add_argument("-o", "--output", help="output file or folder (default ~/Videos/osu-replays)")
     p.add_argument("--beatmap", help="path to the .osu file (skips the automatic lookup)")
     p.add_argument("--songs", help="osu! Songs folder (auto-detected by default)")
     p.add_argument("--scroll-ms", type=float, default=450, help="time in ms a note is visible before it hits (lower = faster, default 450)")
