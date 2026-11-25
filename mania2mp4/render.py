@@ -12,7 +12,8 @@ os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
 import pygame  # noqa: E402
 
-from . import judge  # noqa: E402
+from . import judge, skins  # noqa: E402
+from .inputs import InputOverlay  # noqa: E402
 
 WHITE = (235, 238, 248)
 BLUE = (92, 190, 255)
@@ -76,6 +77,10 @@ class RenderOptions:
     duration_s: float | None = None
     results_s: float = 5.0
     offset_ms: float = 0.0          # shifts audio relative to video
+    skin: str = "arrow"             # "arrow" or "bar"
+    colors: str | None = None       # "snap" or "column"; default depends on the skin
+    show_inputs: bool = True
+    key_labels: list | None = None
 
 
 class Scene:
@@ -91,12 +96,21 @@ class Scene:
         self.col_w = int(min(110, 560 / self.keys) * u)
         self.field_w = self.col_w * self.keys
         self.field_x = (W - self.field_w) // 2
-        self.hit_y = int(900 * u)
+        self.arrow = opts.skin == "arrow"
+        self.hit_y = int((850 if self.arrow else 900) * u)
         self.note_h = int(34 * u)
         self.px_per_ms = self.hit_y / (opts.scroll_ms * replay.rate)  # map ms -> px
         self.colors = column_colors(self.keys)
+        self.colors_by_column = self.colors
+        color_mode = opts.colors or ("snap" if self.arrow else "column")
+        if color_mode == "snap":
+            self.note_colors = skins.snap_colors(bm.notes, bm.timing_points)
+        else:
+            self.note_colors = [self.colors[n.column] for n in bm.notes]
+        self.directions = skins.arrow_layout(self.keys)
 
         fb, fr = _font_path(True), _font_path(False)
+        self.font_bold, self.font_regular = fb, fr
         self.f_combo = pygame.font.Font(fb, int(72 * u))
         self.f_judge = pygame.font.Font(fb, int(56 * u))
         self.f_big = pygame.font.Font(fb, int(44 * u))
@@ -108,6 +122,7 @@ class Scene:
         self._build_static()
         self._build_sprites()
         self._prepare_timeline()
+        self.inputs = InputOverlay(self, opts.key_labels) if opts.show_inputs else None
 
     # ---------- setup ----------
 
@@ -159,7 +174,8 @@ class Scene:
         pygame.draw.line(bg, _scale(edge, 0.35), (self.field_x + self.field_w, 0),
                          (self.field_x + self.field_w, self.H), max(1, int(2 * u)))
         # Judgement line
-        pygame.draw.rect(bg, (230, 230, 240), (self.field_x, self.hit_y, self.field_w, max(2, int(3 * u))))
+        if not self.arrow:
+            pygame.draw.rect(bg, (230, 230, 240), (self.field_x, self.hit_y, self.field_w, max(2, int(3 * u))))
 
         # Static texts: map info, player and mods
         bm, rep = self.bm, self.rep
@@ -199,22 +215,50 @@ class Scene:
         pygame.draw.rect(s, (*color, alpha), (0, 0, w, h), border_radius=radius)
         return s
 
+    def note_sprite(self, column, color, dim=False):
+        key = (column, color, dim)
+        spr = self._sprite_cache.get(key)
+        if spr is None:
+            col = _scale(color, 0.35) if dim else color
+            if self.arrow:
+                spr = skins.make_arrow(self.note_w, self.directions[column], col)
+            else:
+                rad = int(6 * self.u)
+                spr = self._rounded(self.note_w, self.note_h, col, rad)
+                if not dim:
+                    pad = self.pad
+                    hl = self._rounded(self.note_w - 2 * pad, max(2, self.note_h // 3), _scale(col, 1.15), rad // 2)
+                    hl.set_alpha(120)
+                    spr.blit(hl, (pad, pad))
+            self._sprite_cache[key] = spr
+        return spr
+
     def _build_sprites(self):
         u = self.u
-        pad = max(1, int(3 * u))
+        pad = int(self.col_w * 0.07) if self.arrow else max(1, int(3 * u))
         w = self.col_w - pad * 2
         rad = int(6 * u)
         self.pad = pad
-        self.note_sprites = []
-        self.note_dim = []
-        for col in self.colors:
-            s = self._rounded(w, self.note_h, col, rad)
-            hl = self._rounded(w - 2 * pad, max(2, self.note_h // 3), _scale(col, 1.15), rad // 2)
-            hl.set_alpha(120)
-            s.blit(hl, (pad, pad))
-            self.note_sprites.append(s)
-            d = self._rounded(w, self.note_h, _scale(col, 0.35), rad)
-            self.note_dim.append(d)
+        self.note_w = w
+        self._sprite_cache = {}
+        if self.arrow:
+            self.sprite_h = w
+            self.center_off = 0          # sprite centre sits on the time position
+        else:
+            self.sprite_h = self.note_h
+            self.center_off = self.note_h // 2  # bar bottom sits on the time position
+
+        # Arrow receptors and hit flashes
+        if self.arrow:
+            self.arrow_rec_up = [skins.make_receptor(w, d, False, self.colors[c])
+                                 for c, d in enumerate(self.directions)]
+            self.arrow_rec_down = [skins.make_receptor(w, d, True, self.colors[c])
+                                   for c, d in enumerate(self.directions)]
+            self.arrow_flash = []
+            for c, d in enumerate(self.directions):
+                big = int(w * 1.25)
+                spr = skins.make_arrow(big, d, (255, 255, 255), outline=(255, 255, 255), shine=False)
+                self.arrow_flash.append(spr)
 
         # Key light beams (gradient above the judgement line)
         beam_h = int(380 * u)
@@ -319,16 +363,25 @@ class Scene:
         # Beams for held keys
         for c in range(self.keys):
             if self.cur_keys & (1 << c):
-                surf.blit(self.beams[c], (fx + c * cw, hy - self.beam_h))
+                beam_bottom = hy + (self.sprite_h // 2 if self.arrow else 0)
+                surf.blit(self.beams[c], (fx + c * cw, beam_bottom - self.beam_h))
+
+        # Arrow receptors sit under the notes
+        if self.arrow:
+            for c in range(self.keys):
+                pressed = self.cur_keys & (1 << c)
+                spr = self.arrow_rec_down[c] if pressed else self.arrow_rec_up[c]
+                surf.blit(spr, (fx + c * cw + self.pad, hy - self.sprite_h // 2))
 
         # Notes
         notes, res = self.bm.notes, self.res
+        ncol = self.note_colors
         ppm = self.px_per_ms
-        top_time = now + hy / ppm + 50
+        top_time = now + (hy + self.sprite_h) / ppm + 50
         # Skip notes whose end has long passed
         while self.first_visible < len(notes) and notes[self.first_visible].time + self.max_len < now - 2000:
             self.first_visible += 1
-        nh = self.note_h
+        sh, co = self.sprite_h, self.center_off
         for i in range(self.first_visible, len(notes)):
             n = notes[i]
             if n.time > top_time:
@@ -338,11 +391,12 @@ class Scene:
             if not n.is_hold:
                 if r.judgement != judge.MISS and r.hit_time is not None and now >= r.hit_time:
                     continue
-                y = hy - (n.time - now) * ppm
-                if y - nh > self.H:
+                y = hy - (n.time - now) * ppm  # time position
+                top = int(y - co - sh / 2)
+                if top > self.H:
                     continue
-                sprite = self.note_dim[n.column] if (r.judgement == judge.MISS and now > n.time) else self.note_sprites[n.column]
-                surf.blit(sprite, (x, int(y - nh)))
+                dim = r.judgement == judge.MISS and now > n.time
+                surf.blit(self.note_sprite(n.column, ncol[i], dim), (x, top))
                 continue
 
             # Hold note
@@ -358,37 +412,47 @@ class Scene:
                 head_t = max(n.time, now)
             elif r.hit_time is not None and now >= r.hit_time and released:
                 head_t = max(n.time, r.release_time)
-            y_head = hy - (head_t - now) * ppm
-            y_tail = hy - (n.end - now) * ppm
-            if y_tail - nh > self.H:
+            y_head = hy - (head_t - now) * ppm - co
+            y_tail = hy - (n.end - now) * ppm - co
+            if y_tail - sh > self.H:
                 continue
             missed = r.judgement == judge.MISS and now > n.time + self.win.w50
             dead = missed or (released and r.release_time < n.end)
-            col = self.colors[n.column]
-            body_col = _scale(col, 0.25 if dead else (0.85 if held else 0.55))
-            bw = cw - self.pad * 2
-            inset = int(bw * 0.12)
-            top = int(y_tail - nh / 2)
-            bottom = int(y_head - nh / 2)
+            col = ncol[i]
+            body_col = _scale(col, 0.25 if dead else (0.9 if held else 0.6))
+            bw = self.note_w
+            inset = int(bw * (0.25 if self.arrow else 0.12))
+            top, bottom = int(y_tail), int(y_head)
             if bottom > top:
                 pygame.draw.rect(surf, body_col, (x + inset, top, bw - 2 * inset, bottom - top))
-            # Tail cap
-            pygame.draw.rect(surf, body_col, (x + inset, top - int(6 * u), bw - 2 * inset, int(10 * u)),
-                             border_radius=int(4 * u))
-            sprite = self.note_dim[n.column] if dead else self.note_sprites[n.column]
-            surf.blit(sprite, (x, int(y_head - nh)))
+            cap_h = int(14 * u) if self.arrow else int(10 * u)
+            pygame.draw.rect(surf, body_col, (x + inset, top - cap_h // 2, bw - 2 * inset, cap_h),
+                             border_radius=int(6 * u) if self.arrow else int(4 * u))
+            surf.blit(self.note_sprite(n.column, col, dead), (x, int(y_head - sh / 2)))
 
-        # Receptors and flashes
+        # Bar receptors below the line, flashes
         ry = hy + int(6 * u)
         for c in range(self.keys):
-            pressed = self.cur_keys & (1 << c)
-            spr = self.rec_down[c] if pressed else self.rec_up[c]
-            surf.blit(spr, (fx + c * cw + self.pad, ry))
             age = (now - self.last_hit[c]) / rate
-            if 0 <= age < 140:
-                fl = self.flash[c]
-                fl.set_alpha(int(255 * (1 - age / 140)))
-                surf.blit(fl, (fx + c * cw, hy - self.flash_h // 2))
+            if not self.arrow:
+                pressed = self.cur_keys & (1 << c)
+                spr = self.rec_down[c] if pressed else self.rec_up[c]
+                surf.blit(spr, (fx + c * cw + self.pad, ry))
+                if 0 <= age < 140:
+                    fl = self.flash[c]
+                    fl.set_alpha(int(255 * (1 - age / 140)))
+                    surf.blit(fl, (fx + c * cw, hy - self.flash_h // 2))
+            elif 0 <= age < 160:
+                k = age / 160
+                fl = self.arrow_flash[c]
+                size = int(fl.get_width() * (0.85 + 0.25 * k))
+                spr = pygame.transform.smoothscale(fl, (size, size))
+                spr.set_alpha(int(150 * (1 - k)))
+                cxc = fx + c * cw + cw // 2
+                surf.blit(spr, (cxc - size // 2, hy - size // 2))
+
+        if self.inputs:
+            self.inputs.draw(surf, now)
 
         cx = self.W // 2
         # Judgement popup

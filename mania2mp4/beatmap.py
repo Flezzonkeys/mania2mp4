@@ -29,6 +29,7 @@ class Beatmap:
     hp: float = 5.0
     background: str | None = None
     notes: list = field(default_factory=list)
+    timing_points: list = field(default_factory=list)  # (time, beat_length) of uninherited points
 
     @property
     def folder(self) -> Path:
@@ -90,6 +91,17 @@ def parse_beatmap(path) -> Beatmap:
                 if bm.background is None and len(parts) >= 3 and parts[0] == "0" and parts[1] == "0":
                     bm.background = parts[2].strip('"')
 
+            elif section == "TimingPoints":
+                parts = line.split(",")
+                if len(parts) >= 2:
+                    try:
+                        t, beat = float(parts[0]), float(parts[1])
+                    except ValueError:
+                        continue
+                    uninherited = parts[6].strip() == "1" if len(parts) > 6 else beat > 0
+                    if uninherited and beat > 0:
+                        bm.timing_points.append((t, beat))
+
             elif section == "HitObjects":
                 raw_objects.append(line)
 
@@ -109,4 +121,5 @@ def parse_beatmap(path) -> Beatmap:
         bm.notes.append(Note(column=column, time=time, end=end))
 
     bm.notes.sort(key=lambda n: (n.time, n.column))
+    bm.timing_points.sort()
     return bm

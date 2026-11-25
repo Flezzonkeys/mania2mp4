@@ -11,6 +11,7 @@ from pathlib import Path
 from . import __version__, judge
 from .beatmap import parse_beatmap
 from .index import default_songs_dir, find_beatmap
+from .inputs import load_key_labels
 from .osr import MOD_MR, parse_replay
 from .render import RenderOptions, render_video
 
@@ -47,10 +48,10 @@ def convert(replay_path: Path, args, gui: bool) -> Path:
     if rep.mode != 3:
         raise SystemExit(f"{replay_path.name}: not an osu!mania replay (mode {rep.mode}).")
 
+    songs = Path(args.songs) if args.songs else default_songs_dir()
     if args.beatmap:
         bm_path = Path(args.beatmap)
     else:
-        songs = Path(args.songs) if args.songs else default_songs_dir()
         if not songs or not songs.is_dir():
             raise SystemExit("Songs folder not found. Pass it with --songs.")
         bm_path = find_beatmap(rep.beatmap_md5, songs)
@@ -82,11 +83,19 @@ def convert(replay_path: Path, args, gui: bool) -> Path:
         out = DEFAULT_OUT / _default_name(rep, bm)
     out.parent.mkdir(parents=True, exist_ok=True)
 
+    if args.keys:
+        labels = args.keys.split()
+        if len(labels) != bm.keys:
+            raise SystemExit(f"--keys needs {bm.keys} labels for this map, got {len(labels)}.")
+    else:
+        labels = load_key_labels(songs, bm.keys)
+
     w, h = (int(x) for x in args.resolution.lower().split("x"))
     opts = RenderOptions(width=w, height=h, fps=args.fps, scroll_ms=args.scroll_ms, bg_dim=args.dim,
                          encoder=args.encoder, quality=args.quality, offset_ms=args.offset,
                          start_ms=args.start * 1000 if args.start is not None else None,
-                         duration_s=args.duration)
+                         duration_s=args.duration, skin=args.skin, colors=args.colors,
+                         show_inputs=not args.no_inputs, key_labels=labels)
 
     def progress(done, total, elapsed, encoder):
         pct = done / total
@@ -115,6 +124,11 @@ def main(argv=None):
     p.add_argument("--beatmap", help="path to the .osu file (skips the automatic lookup)")
     p.add_argument("--songs", help="osu! Songs folder (auto-detected by default)")
     p.add_argument("--scroll-ms", type=float, default=450, help="time in ms a note is visible before it hits (lower = faster, default 450)")
+    p.add_argument("--skin", choices=["arrow", "bar"], default="arrow", help="note style (default arrow)")
+    p.add_argument("--colors", choices=["snap", "column"],
+                   help="note colours: by rhythm (snap, default for arrows) or by column (default for bars)")
+    p.add_argument("--no-inputs", action="store_true", help="hide the keyboard input overlay")
+    p.add_argument("--keys", help='key labels for the input overlay, e.g. "D F J K" (default: read from osu! config)')
     p.add_argument("-r", "--resolution", default="1920x1080", help="video size, e.g. 1280x720 or 2560x1440")
     p.add_argument("--fps", type=int, default=60)
     p.add_argument("--dim", type=float, default=0.8, help="background dim 0..1 (default 0.8)")
